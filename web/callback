@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Authentication complete</title>
+</head>
+<body>
+  <p>Authentication is complete. If this does not happen automatically, please close the window.</p>
+  <script>
+    const message = window.location.href;
+
+    const targetOrigins = [
+      window.location.origin,
+      'http://localhost:1234',
+      'http://127.0.0.1:1234',
+      'https://srv.ggwpcode.com.br',
+      'https://teste-auth.ggwpcode.com.br'
+    ];
+
+    if (window.opener) {
+      for (const origin of targetOrigins) {
+        window.opener.postMessage(message, origin);
+      }
+      window.close();
+    } else if (window.parent && window.parent !== window) {
+      for (const origin of targetOrigins) {
+        window.parent.postMessage(message, origin);
+      }
+    } else {
+      localStorage.setItem('flutter-web-auth-2', window.location.href);
+      window.close();
+    }
+  </script>
+</body>
+</html>
