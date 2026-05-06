@@ -1,13 +1,13 @@
-import 'dart:convert';
-
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
-import 'package:jwt_decoder/jwt_decoder.dart';
-import 'package:login_automatico/service/oauth2_web_auth.dart';
-import 'package:oauth2_client/access_token_response.dart';
-import 'package:oauth2_client/oauth2_client.dart';
-import 'package:openid_client/openid_client.dart' as oidc;
+import 'package:login_automatico/pages/google_auth_page_controller.dart';
+
+const Color _pageBackgroundColor = Color(0xFF151818);
+const Color _cardBackgroundColor = Color(0xFF1B1D1D);
+const Color _buttonBackgroundColor = Color(0xFF202020);
+const Color _buttonBorderColor = Color(0xFF343434);
+const Color _primaryTextColor = Color(0xFFF6F6F2);
+const Color _secondaryTextColor = Color(0xFFB8BBB5);
+const Color _mutedTextColor = Color(0xFF8C918B);
 
 class KeycloakAuthPage extends StatefulWidget {
   const KeycloakAuthPage({super.key});
@@ -17,485 +17,390 @@ class KeycloakAuthPage extends StatefulWidget {
 }
 
 class _KeycloakAuthPageState extends State<KeycloakAuthPage> {
-  static const String _issuerUrl = 'https://open-id.ggwpcode.com.br/realms/empresa-abc';
+  late final GoogleAuthPageController _controller;
+  String? _lastSnackBarError;
 
-  static const String _authorizationEndpointUrl =
-      '$_issuerUrl/protocol/openid-connect/auth';
-
-  static const String _tokenEndpointUrl =
-      '$_issuerUrl/protocol/openid-connect/token';
-
-  static const String _clientId = 'login_automatico';
-
-  static const String _windowsRedirectUrl = 'http://127.0.0.1:54322/callback';
-
-  static const String _webRedirectUrl = 'https://srv.ggwpcode.com.br/callback';
-
-  static const List<String> _scopes = <String>[
-    'openid',
-    'profile',
-    'email',
-    'offline_access',
-  ];
-
-  bool _isLoading = false;
-  String? _errorMessage;
-  String? _authJson;
-  oidc.Credential? _credential;
-  AccessTokenResponse? _webTokenResponse;
-  String? _refreshTokenValue;
-
-  bool get _isSupportedPlatform =>
-      kIsWeb || defaultTargetPlatform == TargetPlatform.windows;
-
-  String get _unsupportedPlatformMessage =>
-      'Esta tela esta configurada para autenticar via Keycloak em Flutter Web '
-      'ou Flutter Windows.';
-
-  Uri _redirectUri() {
-    if (kIsWeb) {
-      return Uri.parse(_webRedirectUrl);
-    }
-
-    if (defaultTargetPlatform == TargetPlatform.windows) {
-      return Uri.parse(_windowsRedirectUrl);
-    }
-
-    throw UnsupportedError('Plataforma nao suportada para autenticacao.');
+  @override
+  void initState() {
+    super.initState();
+    _controller = GoogleAuthPageController();
+    _controller.addListener(_showErrorSnackBar);
   }
 
-  Future<void> _signIn() async {
-    if (!_isSupportedPlatform) {
-      _setError(_unsupportedPlatformMessage);
+  @override
+  void dispose() {
+    _controller.removeListener(_showErrorSnackBar);
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _showErrorSnackBar() {
+    final String? errorMessage = _controller.errorMessage;
+    if (errorMessage == null) {
+      _lastSnackBarError = null;
       return;
     }
 
-    setState(() {
-      _isLoading = true;
-      _errorMessage = null;
-    });
+    if (errorMessage == _lastSnackBarError) {
+      return;
+    }
 
-    try {
-      if (kIsWeb) {
-        await _startWebAuthentication();
+    _lastSnackBarError = errorMessage;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _controller.errorMessage != errorMessage) {
         return;
       }
 
-      final oidc.Credential credential = await _authenticateWindows();
-      final oidc.TokenResponse tokenResponse = await credential
-          .getTokenResponse();
-
-      _credential = credential;
-      _webTokenResponse = null;
-      _setTokenData(tokenResponse);
-    } catch (error) {
-      _setError(error);
-      if (kIsWeb && mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
-    } finally {
-      if (!kIsWeb && mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
-    }
-  }
-
-  Future<oidc.Credential> _authenticateWindows() async {
-    final oidc.Issuer issuer = await oidc.Issuer.discover(
-      Uri.parse(_issuerUrl),
-    );
-    final oidc.Client client = oidc.Client(issuer, _clientId);
-    final Uri redirectUri = _redirectUri();
-
-    final oidc.Flow flow = oidc.Flow.authorizationCodeWithPKCE(
-      client,
-      scopes: _scopes,
-      prompt: 'login',
-    )..redirectUri = redirectUri;
-
-    final String callbackUrl = await FlutterWebAuth2.authenticate(
-      url: flow.authenticationUri.toString(),
-      callbackUrlScheme: kIsWeb ? redirectUri.scheme : redirectUri.toString(),
-      options: FlutterWebAuth2Options(
-        useWebview: false,
-        windowName: '_blank',
-        debugOrigin: kIsWeb ? redirectUri.origin : null,
-      ),
-    );
-
-    final Uri callbackUri = Uri.parse(callbackUrl);
-    return flow.callback(_authorizationResponse(callbackUri));
-  }
-
-  Future<void> _startWebAuthentication() async {
-    final AccessTokenResponse tokenResponse = await _webOAuth2Client()
-        .getTokenWithAuthCodeFlow(
-          clientId: _clientId,
-          scopes: _scopes,
-          authCodeParams: const <String, dynamic>{'prompt': 'login'},
-        );
-
-    _ensureValidWebTokenResponse(tokenResponse);
-    _setWebTokenData(tokenResponse);
-  }
-
-  OAuth2Client _webOAuth2Client() {
-    final Uri redirectUri = _redirectUri();
-
-    return OAuth2Client(
-      authorizeUrl: _authorizationEndpointUrl,
-      tokenUrl: _tokenEndpointUrl,
-      refreshUrl: _tokenEndpointUrl,
-      redirectUri: redirectUri.toString(),
-      customUriScheme: redirectUri.scheme,
-    )..webAuthClient = createOAuth2WebAuth();
-  }
-
-  void _ensureValidWebTokenResponse(AccessTokenResponse tokenResponse) {
-    if (tokenResponse.isValid() && tokenResponse.accessToken != null) {
-      return;
-    }
-
-    throw StateError(_webTokenError(tokenResponse));
-  }
-
-  String _webTokenError(AccessTokenResponse tokenResponse) {
-    final String? error = tokenResponse.error;
-    final String? description = tokenResponse.errorDescription;
-
-    if (error != null && description != null) {
-      return '$error: $description';
-    }
-
-    if (error != null) {
-      return error;
-    }
-
-    return 'Falha ao obter token OAuth2. HTTP ${tokenResponse.httpStatusCode}.';
-  }
-
-  Map<String, String> _authorizationResponse(Uri callbackUri) {
-    final Map<String, String> response = <String, String>{
-      ...callbackUri.queryParameters,
-    };
-
-    if (callbackUri.fragment.isNotEmpty) {
-      response.addAll(Uri.splitQueryString(callbackUri.fragment));
-    }
-
-    return response;
-  }
-
-  Future<void> _refreshToken() async {
-    if (kIsWeb) {
-      await _refreshWebToken();
-      return;
-    }
-
-    final oidc.Credential? credential = _credential;
-    if (credential == null || _refreshTokenValue == null) {
-      return;
-    }
-
-    setState(() {
-      _isLoading = true;
-      _errorMessage = null;
+      ScaffoldMessenger.maybeOf(
+        context,
+      )?.showSnackBar(SnackBar(content: Text(errorMessage)));
     });
-
-    try {
-      final oidc.TokenResponse tokenResponse = await credential
-          .getTokenResponse(true);
-      _setTokenData(tokenResponse);
-    } catch (error) {
-      _setError(error);
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
-    }
-  }
-
-  Future<void> _refreshWebToken() async {
-    final String? refreshToken = _refreshTokenValue;
-    if (_webTokenResponse == null || refreshToken == null) {
-      return;
-    }
-
-    setState(() {
-      _isLoading = true;
-      _errorMessage = null;
-    });
-
-    try {
-      final AccessTokenResponse refreshedTokenResponse =
-          await _webOAuth2Client().refreshToken(
-            refreshToken,
-            clientId: _clientId,
-            scopes: _scopes,
-          );
-      if (refreshedTokenResponse.refreshToken == null ||
-          refreshedTokenResponse.refreshToken!.isEmpty) {
-        refreshedTokenResponse.refreshToken = refreshToken;
-      }
-
-      _ensureValidWebTokenResponse(refreshedTokenResponse);
-      _setWebTokenData(refreshedTokenResponse);
-    } catch (error) {
-      _setError(error);
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
-    }
-  }
-
-  void _signOut() {
-    setState(() {
-      _authJson = null;
-      _credential = null;
-      _webTokenResponse = null;
-      _refreshTokenValue = null;
-      _errorMessage = null;
-    });
-  }
-
-  void _setTokenData(oidc.TokenResponse tokenResponse) {
-    final Map<String, dynamic> tokenJson = tokenResponse.toJson();
-    final String? accessToken = tokenResponse.accessToken;
-    final String? idToken = tokenJson['id_token'] as String?;
-    final String? refreshToken = tokenResponse.refreshToken;
-    final String? tokenType = tokenResponse.tokenType;
-    final DateTime? expiresAt = tokenResponse.expiresAt;
-    final List<String> scopes = _tokenScopes(tokenJson['scope']);
-
-    final Map<String, Object?> authData = <String, Object?>{
-      'accessToken': accessToken,
-      'idToken': idToken,
-      if (refreshToken != null && refreshToken.isNotEmpty)
-        'refreshToken': refreshToken,
-      'tokenType': tokenType,
-      'expiresAt': expiresAt?.toIso8601String(),
-      'scopes': scopes,
-      'idTokenClaims': _decodeJwt(idToken),
-      'accessTokenClaims': _decodeJwt(accessToken),
-    };
-
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      _refreshTokenValue = refreshToken;
-      _authJson = const JsonEncoder.withIndent('  ').convert(authData);
-      _errorMessage = null;
-    });
-  }
-
-  void _setWebTokenData(AccessTokenResponse tokenResponse) {
-    final String? accessToken = tokenResponse.accessToken;
-    final String? idToken = _stringTokenField(tokenResponse, 'id_token');
-    final String? refreshToken = tokenResponse.refreshToken;
-    final List<String> scopes =
-        tokenResponse.scope
-            ?.where((String scope) => scope.isNotEmpty)
-            .toList() ??
-        _scopes;
-
-    final Map<String, Object?> authData = <String, Object?>{
-      'accessToken': accessToken,
-      'idToken': idToken,
-      if (refreshToken != null && refreshToken.isNotEmpty)
-        'refreshToken': refreshToken,
-      'tokenType': tokenResponse.tokenType,
-      'expiresAt': tokenResponse.expirationDate?.toIso8601String(),
-      'scopes': scopes,
-      'idTokenClaims': _decodeJwt(idToken),
-      'accessTokenClaims': _decodeJwt(accessToken),
-    };
-
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      _credential = null;
-      _webTokenResponse = tokenResponse;
-      _refreshTokenValue = refreshToken;
-      _authJson = const JsonEncoder.withIndent('  ').convert(authData);
-      _errorMessage = null;
-      _isLoading = false;
-    });
-  }
-
-  String? _stringTokenField(
-    AccessTokenResponse tokenResponse,
-    String fieldName,
-  ) {
-    final Object? value = tokenResponse.getRespField(fieldName);
-    if (value is String && value.isNotEmpty) {
-      return value;
-    }
-
-    return null;
-  }
-
-  List<String> _tokenScopes(Object? scope) {
-    if (scope is String && scope.trim().isNotEmpty) {
-      return scope
-          .split(' ')
-          .where((String value) => value.isNotEmpty)
-          .toList();
-    }
-
-    if (scope is List) {
-      return scope.whereType<String>().toList();
-    }
-
-    return _scopes;
-  }
-
-  Map<String, dynamic>? _decodeJwt(String? token) {
-    if (token == null || token.isEmpty) {
-      return null;
-    }
-
-    try {
-      return JwtDecoder.decode(token);
-    } catch (_) {
-      return null;
-    }
-  }
-
-  void _setError(Object error) {
-    if (!mounted) {
-      return;
-    }
-
-    final String message = _friendlyErrorMessage(error);
-    setState(() {
-      _errorMessage = message;
-    });
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        ScaffoldMessenger.maybeOf(
-          context,
-        )?.showSnackBar(SnackBar(content: Text(message)));
-      }
-    });
-  }
-
-  String _friendlyErrorMessage(Object error) {
-    final String message = error.toString();
-    if (!kIsWeb &&
-        defaultTargetPlatform == TargetPlatform.windows &&
-        (message.contains('SocketException') ||
-            message.contains('Callback url scheme must start'))) {
-      return 'Nao foi possivel abrir o callback local do Windows.\n'
-          'Verifique se a porta 1234 esta livre e se o redirect '
-          '$_windowsRedirectUrl esta cadastrado no Keycloak.\n'
-          'A porta local pode estar ocupada, bloqueada ou reservada.';
-    }
-
-    if (kIsWeb &&
-        (message.contains('Failed to fetch') ||
-            message.contains('XMLHttpRequest error'))) {
-      return 'O navegador bloqueou uma chamada para o Keycloak.\n'
-          'No client $_clientId do Keycloak, confira Web Origins e Valid '
-          'Redirect URIs para a origem do app Web, como $_webRedirectUrl.';
-    }
-
-    return message;
   }
 
   @override
   Widget build(BuildContext context) {
-    final bool hasAuthData = _authJson != null;
-    final bool hasRefreshToken = _refreshTokenValue != null;
-    final bool isSupportedPlatform = _isSupportedPlatform;
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (BuildContext context, Widget? child) {
+        return _GoogleAuthPageView(controller: _controller);
+      },
+    );
+  }
+}
 
+class _GoogleAuthPageView extends StatelessWidget {
+  const _GoogleAuthPageView({required this.controller});
+
+  final GoogleAuthPageController controller;
+
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Keycloak Auth'),
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-      ),
+      backgroundColor: _pageBackgroundColor,
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[
-              if (_isLoading) const LinearProgressIndicator(),
-              const SizedBox(height: 16),
-              FilledButton.icon(
-                onPressed: _isLoading ? null : _signIn,
-                icon: const Icon(Icons.login),
-                label: const Text('Entrar com Keycloak'),
-              ),
-              if (!isSupportedPlatform) ...<Widget>[
-                const SizedBox(height: 16),
-                _MessageBox(
-                  message: _unsupportedPlatformMessage,
-                  backgroundColor: Theme.of(context).colorScheme.errorContainer,
-                  foregroundColor: Theme.of(
-                    context,
-                  ).colorScheme.onErrorContainer,
-                ),
-              ],
-              if (hasAuthData) ...<Widget>[
-                const SizedBox(height: 8),
-                if (hasRefreshToken) ...<Widget>[
-                  OutlinedButton.icon(
-                    onPressed: _isLoading ? null : _refreshToken,
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('Atualizar token'),
-                  ),
-                  const SizedBox(height: 8),
-                ],
-                OutlinedButton.icon(
-                  onPressed: _isLoading ? null : _signOut,
-                  icon: const Icon(Icons.logout),
-                  label: const Text('Sair'),
-                ),
-              ],
-              if (_errorMessage != null) ...<Widget>[
-                const SizedBox(height: 16),
-                _MessageBox(
-                  message: _errorMessage!,
-                  backgroundColor: Theme.of(context).colorScheme.errorContainer,
-                  foregroundColor: Theme.of(
-                    context,
-                  ).colorScheme.onErrorContainer,
-                ),
-              ],
-              const SizedBox(height: 16),
-              Expanded(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    border: Border.all(
-                      color: Theme.of(context).colorScheme.outlineVariant,
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 420),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: _cardBackgroundColor,
+                  border: Border.all(color: _buttonBorderColor),
+                  borderRadius: BorderRadius.circular(8),
+                  boxShadow: const <BoxShadow>[
+                    BoxShadow(
+                      color: Color(0x66000000),
+                      blurRadius: 32,
+                      offset: Offset(0, 18),
                     ),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: SingleChildScrollView(
-                    padding: const EdgeInsets.all(12),
-                    child: SelectableText(
-                      _authJson ?? 'Nenhum usuario autenticado.',
-                      style: const TextStyle(fontFamily: 'monospace'),
-                    ),
+                  ],
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(28),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: <Widget>[
+                      const _LogoHeader(),
+                      const SizedBox(height: 32),
+                      const Text(
+                        'Acesse sua conta',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: _primaryTextColor,
+                          fontSize: 26,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Escolha uma forma de login para continuar',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: _secondaryTextColor,
+                          fontSize: 15,
+                          height: 1.4,
+                        ),
+                      ),
+                      const SizedBox(height: 28),
+                      if (controller.isLoading) ...<Widget>[
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(4),
+                          child: const LinearProgressIndicator(
+                            minHeight: 3,
+                            backgroundColor: _buttonBackgroundColor,
+                            color: _primaryTextColor,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                      ],
+                      _LoginButton(
+                        icon: Icons.g_mobiledata,
+                        iconColor: const Color(0xFFEA4335),
+                        label: 'Entrar com Google',
+                        onPressed: controller.canLogin
+                            ? () => controller.loginWithProvider('google')
+                            : null,
+                      ),
+                      const SizedBox(height: 12),
+                      _LoginButton(
+                        icon: Icons.apple,
+                        iconColor: _primaryTextColor,
+                        label: 'Entrar com Apple',
+                        onPressed: controller.canLogin
+                            ? () => controller.loginWithProvider('apple')
+                            : null,
+                      ),
+                      const SizedBox(height: 12),
+                      _LoginButton(
+                        icon: Icons.facebook,
+                        iconColor: const Color(0xFF1877F2),
+                        label: 'Entrar com Facebook',
+                        onPressed: controller.canLogin
+                            ? () => controller.loginWithProvider('facebook')
+                            : null,
+                      ),
+                      const SizedBox(height: 18),
+                      const _DividerWithText(label: 'ou'),
+                      const SizedBox(height: 18),
+                      _LoginButton(
+                        icon: Icons.email_outlined,
+                        iconColor: _primaryTextColor,
+                        label: 'Entrar com e-mail',
+                        onPressed: controller.canLogin
+                            ? controller.loginWithEmail
+                            : null,
+                      ),
+                      if (!controller.isSupportedPlatform) ...<Widget>[
+                        const SizedBox(height: 18),
+                        _MessageBox(
+                          message: controller.unsupportedPlatformMessage,
+                          backgroundColor: const Color(0xFF332727),
+                          foregroundColor: const Color(0xFFFFC9C9),
+                        ),
+                      ],
+                      if (controller.errorMessage != null) ...<Widget>[
+                        const SizedBox(height: 18),
+                        _MessageBox(
+                          message: controller.errorMessage!,
+                          backgroundColor: const Color(0xFF332727),
+                          foregroundColor: const Color(0xFFFFC9C9),
+                        ),
+                      ],
+                      if (controller.hasAuthData) ...<Widget>[
+                        const SizedBox(height: 18),
+                        const _MessageBox(
+                          message:
+                              'Autenticacao concluida pelo Keycloak. Nenhuma senha foi coletada pelo app.',
+                          backgroundColor: Color(0xFF183127),
+                          foregroundColor: Color(0xFFC6F6D5),
+                        ),
+                        if (controller.hasRefreshToken) ...<Widget>[
+                          const SizedBox(height: 12),
+                          _SessionActionButton(
+                            icon: Icons.refresh,
+                            label: 'Atualizar token',
+                            onPressed: controller.isLoading
+                                ? null
+                                : controller.refreshToken,
+                          ),
+                        ],
+                        const SizedBox(height: 8),
+                        _SessionActionButton(
+                          icon: Icons.logout,
+                          label: 'Sair',
+                          onPressed: controller.isLoading
+                              ? null
+                              : () => controller.signOut(),
+                        ),
+                      ],
+                      const SizedBox(height: 24),
+                      const Text(
+                        'Ao continuar, voce concorda com os Termos de Uso e a Politica de Privacidade.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: _mutedTextColor,
+                          fontSize: 12,
+                          height: 1.45,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
-            ],
+            ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LogoHeader extends StatelessWidget {
+  const _LogoHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: <Widget>[
+        DecoratedBox(
+          decoration: BoxDecoration(
+            color: _buttonBackgroundColor,
+            border: Border.all(color: _buttonBorderColor),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: const SizedBox(
+            width: 42,
+            height: 42,
+            child: Center(
+              child: Text(
+                'A',
+                style: TextStyle(
+                  color: _primaryTextColor,
+                  fontSize: 22,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        const Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text(
+              'ARGO',
+              style: TextStyle(
+                color: _primaryTextColor,
+                fontSize: 20,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            Text(
+              'sistemas',
+              style: TextStyle(
+                color: _secondaryTextColor,
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _LoginButton extends StatelessWidget {
+  const _LoginButton({
+    required this.icon,
+    required this.iconColor,
+    required this.label,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+  final Color iconColor;
+  final String label;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isDisabled = onPressed == null;
+
+    return SizedBox(
+      width: double.infinity,
+      height: 54,
+      child: OutlinedButton(
+        onPressed: onPressed,
+        style: OutlinedButton.styleFrom(
+          backgroundColor: _buttonBackgroundColor,
+          foregroundColor: _primaryTextColor,
+          disabledForegroundColor: _mutedTextColor,
+          side: const BorderSide(color: _buttonBorderColor),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+        ),
+        child: Row(
+          children: <Widget>[
+            Icon(
+              icon,
+              color: isDisabled ? _mutedTextColor : iconColor,
+              size: 24,
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Text(
+                label,
+                textAlign: TextAlign.center,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            const SizedBox(width: 38),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DividerWithText extends StatelessWidget {
+  const _DividerWithText({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: <Widget>[
+        const Expanded(child: Divider(color: _buttonBorderColor, height: 1)),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Text(
+            label,
+            style: const TextStyle(
+              color: _mutedTextColor,
+              fontSize: 13,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ),
+        const Expanded(child: Divider(color: _buttonBorderColor, height: 1)),
+      ],
+    );
+  }
+}
+
+class _SessionActionButton extends StatelessWidget {
+  const _SessionActionButton({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      height: 44,
+      child: OutlinedButton.icon(
+        onPressed: onPressed,
+        icon: Icon(icon, size: 18),
+        label: Text(label, overflow: TextOverflow.ellipsis),
+        style: OutlinedButton.styleFrom(
+          backgroundColor: _buttonBackgroundColor,
+          foregroundColor: _primaryTextColor,
+          disabledForegroundColor: _mutedTextColor,
+          side: const BorderSide(color: _buttonBorderColor),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
         ),
       ),
     );
