@@ -1,5 +1,5 @@
 import 'dart:convert';
-
+import 'dart:html' as html;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
 import 'package:jwt_decoder/jwt_decoder.dart';
@@ -107,20 +107,22 @@ class GoogleAuthPageController extends ChangeNotifier {
         },
       );
 
+      if (kIsWeb) {
+        _clearLocalSession();
+        html.window.location.assign(logoutUri.toString());
+        return;
+      }
+
       await FlutterWebAuth2.authenticate(
         url: logoutUri.toString(),
-        callbackUrlScheme: kIsWeb
-            ? postLogoutRedirectUri.scheme
-            : postLogoutRedirectUri.toString(),
-        options: FlutterWebAuth2Options(
+        callbackUrlScheme: postLogoutRedirectUri.toString(),
+        options: const FlutterWebAuth2Options(
           useWebview: false,
           windowName: '_blank',
-          debugOrigin: kIsWeb ? postLogoutRedirectUri.origin : null,
         ),
       );
     } catch (error) {
       debugPrint('Falha ao efetuar logout no Keycloak: $error');
-    } finally {
       _clearLocalSession();
     }
   }
@@ -238,7 +240,7 @@ class GoogleAuthPageController extends ChangeNotifier {
 
   Uri _postLogoutRedirectUri() {
     if (kIsWeb) {
-      return Uri.parse('https://srv.ggwpcode.com.br/logout-success');
+      return Uri.parse('https://auth.ggwpcode.com.br/logout-success');
     }
 
     if (defaultTargetPlatform == TargetPlatform.windows) {
